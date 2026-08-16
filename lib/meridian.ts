@@ -152,7 +152,9 @@ export interface CredentialRecord {
 
 // --- HR (employeeId) ---
 
-export async function searchEmployees(query: string): Promise<Employee[]> {
+// query is optional: omit it to list/count every employee (used for
+// "how many employees" style questions, not just name lookups).
+export async function searchEmployees(query?: string): Promise<Employee[]> {
   return fetchAllPages<Employee>("/hr/employees", { q: query });
 }
 
@@ -167,7 +169,8 @@ export async function getEmployeeById(employeeId: string): Promise<Employee | nu
 
 // --- Scheduling: workers (workerId) ---
 
-export async function searchWorkers(query: string): Promise<Worker[]> {
+// query is optional: omit it to list/count every worker.
+export async function searchWorkers(query?: string): Promise<Worker[]> {
   return fetchAllPages<Worker>("/scheduling/workers", { q: query });
 }
 

@@ -2,6 +2,7 @@
 
 import { useChat } from "@ai-sdk/react";
 import { useState } from "react";
+import ReactMarkdown from "react-markdown";
 
 export default function Home() {
   const { messages, sendMessage, status, error } = useChat();
@@ -40,10 +41,14 @@ export default function Home() {
             >
               {message.parts.map((part, i) => {
                 if (part.type === "text") {
-                  return (
+                  return message.role === "user" ? (
                     <span key={i} className="whitespace-pre-wrap">
                       {part.text}
                     </span>
+                  ) : (
+                    <div key={i} className="markdown-answer">
+                      <ReactMarkdown>{part.text}</ReactMarkdown>
+                    </div>
                   );
                 }
                 if (part.type.startsWith("tool-")) {

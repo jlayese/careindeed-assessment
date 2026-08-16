@@ -24,3 +24,30 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+.markdown-answer p {
+  margin: 0.4em 0;
+}
+.markdown-answer p:first-child {
+  margin-top: 0;
+}
+.markdown-answer p:last-child {
+  margin-bottom: 0;
+}
+.markdown-answer ul,
+.markdown-answer ol {
+  margin: 0.4em 0;
+  padding-left: 1.25em;
+}
+.markdown-answer li {
+  margin: 0.15em 0;
+}
+.markdown-answer strong {
+  font-weight: 600;
+}
+.markdown-answer code {
+  background: rgba(0, 0, 0, 0.08);
+  border-radius: 3px;
+  padding: 0.1em 0.3em;
+  font-size: 0.9em;
+}
