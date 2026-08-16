@@ -17,15 +17,17 @@ copied verbatim from the live app.
    > Shift S-3240 — August 18, 2026, 7:00 AM–3:00 PM
    > Facility: F-03 (Oakview Commons)
    > Role: RN
-   > Required credentials: RN_LICENSE, CPR, TB_TEST
    > Status: ASSIGNED
    > Source: Scheduling system.
 
 4. **Can Maria Santos take shift S-3243?**
-   > No. Maria Santos is ACTIVE in HR (employee E-1001), and the Scheduling record identifies
-   > her as worker W-202. Shift S-3243 requires RN_LICENSE, CPR, and TB_TEST (Scheduling), but
-   > Credentialing shows only active RN_LICENSE and CPR for E-1001. She is missing an active
-   > TB_TEST credential.
+   > No. Maria Santos is not eligible for shift S-3243.
+   >
+   > HR: Maria Santos (E-1001) is ACTIVE.
+   > Scheduling: Shift S-3243 requires RN_LICENSE, CPR, and TB_TEST.
+   > Credentialing: She has active RN_LICENSE and CPR, but no active TB_TEST credential.
+   >
+   > She is missing the required TB_TEST credential.
 
 5. **How many open shifts does Oakview Commons have in the next 7 days?**
    > Oakview Commons has 3 open shifts in the next 7 days, August 16–22, 2026. (Scheduling
