@@ -1,7 +1,7 @@
 import { streamText, tool, stepCountIs, convertToModelMessages, type UIMessage } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { z } from "zod";
-import { SYSTEM_PROMPT } from "@/lib/system-prompt";
+import { buildSystemPrompt } from "@/lib/system-prompt";
 import {
   searchEmployees,
   getEmployeeById,
@@ -30,9 +30,11 @@ const MODEL_ID = "openai/gpt-5.6-luna";
 export async function POST(req: Request) {
   const { messages }: { messages: UIMessage[] } = await req.json();
 
+  const todayIso = new Date().toISOString().slice(0, 10);
+
   const result = streamText({
     model: openrouter(MODEL_ID),
-    system: SYSTEM_PROMPT,
+    system: buildSystemPrompt(todayIso),
     messages: await convertToModelMessages(messages),
     stopWhen: stepCountIs(8), // allow multi-step tool calling for cross-system questions
     tools: {
