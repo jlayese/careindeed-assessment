@@ -26,31 +26,47 @@ on them.
 
 ## Architecture
 
-```
-Browser (React chat UI, app/page.tsx)
-        │  POST /api/chat  (user message only, no secrets)
-        ▼
-Next.js Route Handler (app/api/chat/route.ts) — server-only
-        │
-        ├─ streams model output back to browser
-        │
-        ├─→ OpenRouter (chat completion, tool-calling loop)
-        │        MODEL: openai/gpt-5.6-luna
-        │
-        └─→ Meridian API (lib/meridian.ts) — server-only, holds MERIDIAN_API_KEY
-                 - searchPerson / getPersonById   (cross-system identity resolution)
-                 - getEmploymentStatus
-                 - getCredentials
-                 - listShiftsForWorker / getShiftById / listOpenShiftsForFacility
-                 - listFacilities / getFacility
+```mermaid
+flowchart TB
+    subgraph Client["Coordinator's Browser"]
+        UI["Chat UI<br/>app/page.tsx"]
+    end
+
+    subgraph EC2["EC2 Server (18.144.205.220)"]
+        subgraph CaddyBox["Caddy — reverse proxy"]
+            TLS["Automatic HTTPS<br/>(Let's Encrypt via<br/>18-144-205-220.sslip.io)"]
+            Auth["Basic Auth Gate<br/>(bcrypt-hashed password)"]
+        end
+        subgraph PM2Box["pm2 — survives SSH disconnect,<br/>auto-restarts on crash/reboot"]
+            App["Next.js app :3000<br/>app/api/chat/route.ts"]
+        end
+        Env[("Local .env.local<br/>MERIDIAN_API_KEY, OPENROUTER_API_KEY<br/>never in git, never sent to browser")]
+    end
+
+    subgraph External["External services"]
+        OR["OpenRouter<br/>model: openai/gpt-5.6-luna"]
+        MER["Meridian API<br/>HR / Scheduling / Credentialing"]
+    end
+
+    UI -- "HTTPS" --> TLS
+    TLS --> Auth
+    Auth -- "authenticated only" --> App
+    App -. "reads secrets, server-side only" .-> Env
+    App -- "tool-calling loop" --> OR
+    OR -- "streamed tokens + tool calls" --> App
+    App -- "live call per question,<br/>never cached (cache: 'no-store')" --> MER
+    App -- "SSE stream" --> UI
 ```
 
-Both API keys (`MERIDIAN_API_KEY`, `OPENROUTER_API_KEY`) live only in server-side env vars,
-read inside the route handler and `lib/meridian.ts`. Neither is ever sent to the browser or
-committed to git (`.gitignore` excludes `.env*`, `.env.example` is the committed template).
+**Security measures shown above:**
+- TLS termination at Caddy (automatic Let's Encrypt cert for the sslip.io hostname)
+- Basic auth required before any request reaches the app, no anonymous access
+- `MERIDIAN_API_KEY` / `OPENROUTER_API_KEY` live only in server-side `.env.local`, read by
+  the route handler and `lib/meridian.ts`; never sent to the browser, never committed to git
+  (`.gitignore` excludes `.env*`, `.env.example` is the committed template)
+- Every Meridian call happens live, per question, with `cache: 'no-store'`, results are
+  never pre-fetched or cached, so answers can't go stale or leak across sessions
 
-The model calls Meridian tools live, at question time, for every answer, results are never
-pre-fetched or cached, per the "answers come from live Meridian API calls" requirement.
 `lib/meridian.ts`'s `fetchAllPages` helper walks pagination fully before returning results,
 so list/count questions reflect every page, not just the first.
 
@@ -79,7 +95,53 @@ npm run dev
 
 Deployed to the assessment EC2 instance behind Caddy (automatic HTTPS via Let's Encrypt on
 a sslip.io hostname pointing at the server's public IP), running under `pm2` so the process
-survives SSH disconnects and restarts automatically.
+survives SSH disconnects and restarts automatically. See the diagram above for the full
+request path (browser → Caddy TLS/basic-auth → pm2-managed Next.js app → OpenRouter +
+Meridian API).
+
+**One-time setup on the server** (Node via nvm, no root required):
+
+```bash
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+source ~/.bashrc
+nvm install 22
+npm install -g pm2
+
+git clone https://github.com/jlayese/careindeed-assessment.git
+cd careindeed-assessment
+npm install
+cp .env.example .env.local   # fill in the real MERIDIAN_API_KEY and OPENROUTER_API_KEY
+npm run build
+
+pm2 start npm --name assistant -- start
+pm2 save
+pm2 startup   # then run the command it prints, enables auto-start on reboot
+```
+
+**Caddy** (system service, needs sudo): install it, then set `/etc/caddy/Caddyfile` to:
+
+```
+18-144-205-220.sslip.io {
+    basicauth /* {
+        reviewer <bcrypt hash from: caddy hash-password --plaintext 'your-password'>
+    }
+    reverse_proxy localhost:3000
+}
+sudo systemctl restart caddy
+```
+
+**To redeploy after a code change:**
+
+```bash
+cd ~/careindeed-assessment
+git pull
+npm install        # picks up any new/changed dependencies
+npm run build
+pm2 restart assistant
+```
+
+Caddy only needs touching again if the Caddyfile itself changes (`sudo systemctl reload caddy`
+for config-only changes; a graceful reload with no dropped connections).
 
 ## What was prioritized / cut
 
