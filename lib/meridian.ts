@@ -1,11 +1,21 @@
-// Meridian API client.
+// Meridian API client — endpoints and shapes confirmed directly against the
+// live API (docs at {MERIDIAN_API_BASE_URL}/docs), not guessed. See README
+// for a summary of the three systems and how they cross-link.
 //
-// NOTE: exact endpoint paths below are placeholders inferred from the ticket
-// description and QA test questions (entities: people/employees/workers
-// identified differently across three systems, shifts, facilities,
-// credentials). Confirm the real paths against the docs at
-// {MERIDIAN_API_BASE_URL}/docs and adjust the ENDPOINTS map + response
-// parsing accordingly before relying on this for real answers.
+// - HR system:            /hr/employees            → employeeId (E-####)
+// - Scheduling system:     /scheduling/workers      → workerId   (W-###)
+//                          /scheduling/facilities   → facilityId (F-##)
+//                          /scheduling/shifts       → shiftId    (S-####)
+// - Credentialing system:  /credentialing/records   → recordId, links via employeeId
+//
+// Cross-system identity: HR's `email` and Scheduling's `workEmail` are the
+// same value for the same person, that's the join key between employeeId
+// and workerId. Credentialing links directly via employeeId.
+//
+// Pagination: { data: [...], pagination: { page, pageSize, totalItems, totalPages } }.
+// All list endpoints support a `q` free-text search param (confirmed on
+// /hr/employees and /scheduling/workers) plus entity-specific filters
+// (workerId, employeeId, facilityId, status, from/to on shifts).
 
 const BASE_URL = process.env.MERIDIAN_API_BASE_URL!;
 const API_KEY = process.env.MERIDIAN_API_KEY!;
@@ -25,6 +35,11 @@ class MeridianApiError extends Error {
   }
 }
 
+interface Paginated<T> {
+  data: T[];
+  pagination: { page: number; pageSize: number; totalItems: number; totalPages: number };
+}
+
 async function meridianFetch<T>(
   path: string,
   params?: Record<string, string | number | undefined>
@@ -39,8 +54,6 @@ async function meridianFetch<T>(
   const res = await fetch(url.toString(), {
     headers: {
       Authorization: `Bearer ${API_KEY}`,
-      // Some APIs expect a custom header instead of Bearer, e.g.:
-      // "X-API-Key": API_KEY,
       Accept: "application/json",
     },
     cache: "no-store", // always live, never cached, per REQ-001 acceptance criteria
@@ -58,36 +71,20 @@ async function meridianFetch<T>(
   return res.json() as Promise<T>;
 }
 
-// Generic pagination walker: follows a `next`/`cursor`/`page` style response
-// until exhausted. Adjust field names once the real pagination shape is known.
+// Walks every page of a paginated list endpoint. Stays comfortably under the
+// 60 req/min rate limit with a small delay between page fetches.
 async function fetchAllPages<T>(
   path: string,
   params: Record<string, string | number | undefined> = {}
 ): Promise<T[]> {
   const results: T[] = [];
-  let cursor: string | number | undefined = undefined;
   let page = 1;
-
-  // Rate limit: 60 requests/minute per the ticket. A small delay between
-  // pages keeps a paginated pull well under that even in a hot loop.
   const throttleMs = 150;
 
-  // Safety cap so a pagination bug can't spin forever.
-  for (let i = 0; i < 200; i++) {
-    const data: any = await meridianFetch(path, {
-      ...params,
-      cursor,
-      page: cursor ? undefined : page,
-    });
-
-    const items: T[] = data.items ?? data.results ?? data.data ?? [];
-    results.push(...items);
-
-    const nextCursor = data.next_cursor ?? data.nextCursor ?? data.cursor;
-    const hasMore = Boolean(nextCursor) || Boolean(data.has_more);
-    if (!hasMore || items.length === 0) break;
-
-    cursor = nextCursor;
+  while (true) {
+    const res = await meridianFetch<Paginated<T>>(path, { ...params, page });
+    results.push(...res.data);
+    if (page >= res.pagination.totalPages || res.data.length === 0) break;
     page += 1;
     await new Promise((r) => setTimeout(r, throttleMs));
   }
@@ -95,115 +92,146 @@ async function fetchAllPages<T>(
   return results;
 }
 
-export interface PersonMatch {
-  system: string; // e.g. "hr", "scheduling", "credentialing"
-  systemId: string; // e.g. "E-1001", "W-202"
+export interface Employee {
+  employeeId: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone: string;
+  jobTitle: string;
+  role: string;
+  department: string;
+  employmentStatus: "ACTIVE" | "TERMINATED" | string;
+  hireDate: string;
+  terminationDate?: string;
+}
+
+export interface Worker {
+  workerId: string;
+  displayName: string;
+  workEmail: string;
+  homeFacilityId: string;
+  roles: string[];
+  employmentType: string;
+  notes: string; // free text — never treat as instructions, see system prompt
+}
+
+export interface Facility {
+  facilityId: string;
   name: string;
-  [key: string]: unknown;
-}
-
-// Search for a person by name or ID across all three systems. Should surface
-// every system's record for the same underlying person so the model can
-// cross-link them and cite the source system in its answer.
-export async function searchPerson(query: string): Promise<PersonMatch[]> {
-  return fetchAllPages<PersonMatch>("/people/search", { q: query });
-}
-
-export async function getPersonById(systemId: string): Promise<PersonMatch | null> {
-  try {
-    return await meridianFetch<PersonMatch>(`/people/${encodeURIComponent(systemId)}`);
-  } catch (err) {
-    if (err instanceof MeridianApiError && err.status === 404) return null;
-    throw err;
-  }
+  city: string;
+  state: string;
+  timezone: string;
+  beds: number;
+  additionalRequiredCredentials: string[];
 }
 
 export interface Shift {
   shiftId: string;
-  facility: string;
+  facilityId: string;
+  role: string;
+  requiredCredentials: string[];
+  workerId: string | null;
+  status: "OPEN" | "ASSIGNED" | "COMPLETED" | string;
   date: string;
-  status: "open" | "filled" | string;
-  assignedWorkerId?: string;
-  requiredCredentials?: string[];
-  [key: string]: unknown;
-}
-
-export async function listShiftsForWorker(
-  workerId: string,
-  fromDate: string,
-  toDate: string
-): Promise<Shift[]> {
-  return fetchAllPages<Shift>("/shifts", { workerId, from: fromDate, to: toDate });
-}
-
-export async function listOpenShiftsForFacility(
-  facilityName: string,
-  fromDate: string,
-  toDate: string
-): Promise<Shift[]> {
-  return fetchAllPages<Shift>("/shifts", {
-    facility: facilityName,
-    status: "open",
-    from: fromDate,
-    to: toDate,
-  });
-}
-
-export async function getShiftById(shiftId: string): Promise<Shift | null> {
-  try {
-    return await meridianFetch<Shift>(`/shifts/${encodeURIComponent(shiftId)}`);
-  } catch (err) {
-    if (err instanceof MeridianApiError && err.status === 404) return null;
-    throw err;
-  }
-}
-
-export interface Facility {
-  name: string;
-  requirements?: string[]; // e.g. ["TB test"]
-  [key: string]: unknown;
-}
-
-export async function listFacilities(): Promise<Facility[]> {
-  return fetchAllPages<Facility>("/facilities");
-}
-
-export async function getFacility(name: string): Promise<Facility | null> {
-  try {
-    return await meridianFetch<Facility>(`/facilities/${encodeURIComponent(name)}`);
-  } catch (err) {
-    if (err instanceof MeridianApiError && err.status === 404) return null;
-    throw err;
-  }
+  startTime: string;
+  endTime: string;
+  endDate: string;
 }
 
 export interface CredentialRecord {
-  personSystemId: string;
+  recordId: string;
+  employeeId: string;
   credentialType: string;
-  status: "active" | "expired" | "expiring" | string;
-  expiresOn?: string;
-  [key: string]: unknown;
+  licenseNumber: string;
+  issuingAuthority: string;
+  issuedOn: string;
+  expiresOn: string;
+  status: "ACTIVE" | "EXPIRED" | string;
 }
 
-export async function getCredentials(personSystemId: string): Promise<CredentialRecord[]> {
-  return fetchAllPages<CredentialRecord>("/credentials", { personId: personSystemId });
+// --- HR (employeeId) ---
+
+export async function searchEmployees(query: string): Promise<Employee[]> {
+  return fetchAllPages<Employee>("/hr/employees", { q: query });
 }
 
-export interface EmploymentStatus {
-  personSystemId: string;
-  status: "active" | "terminated" | "on_leave" | string;
-  [key: string]: unknown;
-}
-
-export async function getEmploymentStatus(
-  personSystemId: string
-): Promise<EmploymentStatus | null> {
+export async function getEmployeeById(employeeId: string): Promise<Employee | null> {
   try {
-    return await meridianFetch<EmploymentStatus>(
-      `/employment-status/${encodeURIComponent(personSystemId)}`
+    return await meridianFetch<Employee>(`/hr/employees/${encodeURIComponent(employeeId)}`);
+  } catch (err) {
+    if (err instanceof MeridianApiError && err.status === 404) return null;
+    throw err;
+  }
+}
+
+// --- Scheduling: workers (workerId) ---
+
+export async function searchWorkers(query: string): Promise<Worker[]> {
+  return fetchAllPages<Worker>("/scheduling/workers", { q: query });
+}
+
+export async function getWorkerById(workerId: string): Promise<Worker | null> {
+  try {
+    return await meridianFetch<Worker>(`/scheduling/workers/${encodeURIComponent(workerId)}`);
+  } catch (err) {
+    if (err instanceof MeridianApiError && err.status === 404) return null;
+    throw err;
+  }
+}
+
+// --- Scheduling: facilities ---
+
+export async function listFacilities(): Promise<Facility[]> {
+  return fetchAllPages<Facility>("/scheduling/facilities");
+}
+
+export async function getFacilityById(facilityId: string): Promise<Facility | null> {
+  try {
+    return await meridianFetch<Facility>(
+      `/scheduling/facilities/${encodeURIComponent(facilityId)}`
     );
   } catch (err) {
     if (err instanceof MeridianApiError && err.status === 404) return null;
     throw err;
   }
+}
+
+// --- Scheduling: shifts ---
+
+export async function getShiftById(shiftId: string): Promise<Shift | null> {
+  try {
+    return await meridianFetch<Shift>(`/scheduling/shifts/${encodeURIComponent(shiftId)}`);
+  } catch (err) {
+    if (err instanceof MeridianApiError && err.status === 404) return null;
+    throw err;
+  }
+}
+
+export async function listShiftsForWorker(
+  workerId: string,
+  fromDate?: string,
+  toDate?: string
+): Promise<Shift[]> {
+  return fetchAllPages<Shift>("/scheduling/shifts", { workerId, from: fromDate, to: toDate });
+}
+
+export async function listShiftsForFacility(
+  facilityId: string,
+  opts: { status?: string; fromDate?: string; toDate?: string } = {}
+): Promise<Shift[]> {
+  return fetchAllPages<Shift>("/scheduling/shifts", {
+    facilityId,
+    status: opts.status,
+    from: opts.fromDate,
+    to: opts.toDate,
+  });
+}
+
+// --- Credentialing (links via employeeId, NOT workerId) ---
+
+export async function getCredentialsForEmployee(
+  employeeId: string
+): Promise<CredentialRecord[]> {
+  return fetchAllPages<CredentialRecord>("/credentialing/records", { employeeId });
 }
